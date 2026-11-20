@@ -156,8 +156,64 @@ def index():
     return send_file(Path(__file__).with_name("index.html"), max_age=0)
 
 
+@app.get("/api/config")
+def config():
+    # The port the HTTPS listener is published on (the page links to it for one-tap saving on iOS).
+    return jsonify({"httpsPort": int(os.environ.get("HTTPS_PUBLIC_PORT", "8643"))})
+
+
+def ensure_certificate():
+    """Creates (or renews) a self-signed certificate, kept in the cache volume so it stays the same across restarts."""
+    import datetime
+    import ipaddress
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    folder = THUMBS / "tls"
+    cert_path, key_path = folder / "cert.pem", folder / "key.pem"
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if cert_path.exists() and key_path.exists():
+        existing = x509.load_pem_x509_certificate(cert_path.read_bytes())
+        if existing.not_valid_after_utc - now > datetime.timedelta(days=30):
+            return cert_path, key_path
+
+    names = ["localhost"] + [n.strip() for n in os.environ.get("TLS_NAMES", "").split(",") if n.strip()]
+    sans = []
+    for n in names:
+        try:
+            sans.append(x509.IPAddress(ipaddress.ip_address(n)))
+        except ValueError:
+            sans.append(x509.DNSName(n))
+    key = ec.generate_private_key(ec.SECP256R1())
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Photo Backup Gallery")])
+    cert = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject).public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - datetime.timedelta(days=1)).not_valid_after(now + datetime.timedelta(days=800))
+            .add_extension(x509.SubjectAlternativeName(sans), critical=False)
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .sign(key, hashes.SHA256()))
+    folder.mkdir(parents=True, exist_ok=True)
+    key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                           serialization.NoEncryption()))
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    return cert_path, key_path
+
+
 if __name__ == "__main__":
-    from waitress import serve
+    from cheroot.ssl.builtin import BuiltinSSLAdapter
+    from cheroot.wsgi import Server
+
     THUMBS.mkdir(parents=True, exist_ok=True)
-    print(f"Serving {ROOT} on port 8080 (video thumbnails: {'on' if FFMPEG else 'off, ffmpeg missing'})", flush=True)
-    serve(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8080")), threads=12)
+    port, tls_port = int(os.environ.get("PORT", "8080")), int(os.environ.get("TLS_PORT", "8443"))
+    print(f"Serving {ROOT}: http on {port}, https on {tls_port} "
+          f"(video thumbnails: {'on' if FFMPEG else 'off, ffmpeg missing'})", flush=True)
+    try:
+        cert, key = ensure_certificate()
+        secure = Server(("0.0.0.0", tls_port), app, numthreads=12)
+        secure.ssl_adapter = BuiltinSSLAdapter(str(cert), str(key))
+        threading.Thread(target=secure.start, daemon=True).start()
+    except Exception as e:  # plain http still works without it
+        print(f"HTTPS is off: {e}", flush=True)
+    Server(("0.0.0.0", port), app, numthreads=12).start()

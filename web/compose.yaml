@@ -1,15 +1,21 @@
 # Dockge stack: read-only photo gallery for the iPhone backup.
-# Paste this into a new Dockge stack and deploy, then open http://10.0.0.41:8642
+# Paste this into a new Dockge stack and deploy.
+#   https://10.0.0.41:8643  use this on the iPhone (one-tap Save to Photos, multi-select)
+#   http://10.0.0.41:8642   plain address, browsing and downloads only
 # To update later: press Update in Dockge (it pulls the newest image).
 services:
   photo-gallery:
     image: ghcr.io/cmichalsen/iphone-photo-backup:latest
     restart: unless-stopped
+    environment:
+      TLS_NAMES: "10.0.0.41"          # address(es) the self-signed certificate is issued for
+      HTTPS_PUBLIC_PORT: "8643"       # must match the https port below
     volumes:
       - /mnt/tank/media/iphone:/photos:ro   # the backup, read-only
-      - thumbs:/thumbs                      # thumbnail cache, kept in a Docker volume
+      - thumbs:/thumbs                      # thumbnail cache + certificate, kept in a Docker volume
     ports:
       - "8642:8080"
+      - "8643:8443"
 
 volumes:
   thumbs:

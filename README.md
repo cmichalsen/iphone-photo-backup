@@ -1,4 +1,4 @@
-# iPhone Photo Backup
+﻿# iPhone Photo Backup
 
 Copies photos and videos from an iPhone (USB) to a network folder, verifies each copy by checksum, and can then delete the verified ones from the phone.
 
@@ -18,7 +18,7 @@ Copies photos and videos from an iPhone (USB) to a network folder, verifies each
 2. Run `publish\PhotoBackup.App.exe`.
 3. **Back up now** copies anything new to `<destination>\YYYY\YYYY-MM\`. Safe to cancel or unplug; the next run carries on.
 4. **Preview delete** lists what could be removed. It deletes nothing.
-5. **Delete verified from phone…** asks for confirmation, then deletes only files that have a verified copy.
+5. **Delete verified from phoneâ€¦** asks for confirmation, then deletes only files that have a verified copy.
 
 ## What "verified" means
 
@@ -32,7 +32,7 @@ While a file streams off the phone the app computes its SHA-256. After the file 
 
 ## Limits
 
-- Files only: albums, favourites and edit history are not preserved. Live Photos arrive as a photo plus a `.MOV`; edited photos as the original plus an `IMG_E…` file.
+- Files only: albums, favourites and edit history are not preserved. Live Photos arrive as a photo plus a `.MOV`; edited photos as the original plus an `IMG_Eâ€¦` file.
 - Folders are chosen from the date the phone reports for each file.
 
 ## Development
@@ -46,5 +46,5 @@ dotnet publish src/PhotoBackup.App -c Release -r win-x64 --self-contained true -
 
 ## Web gallery (on the NAS)
 
-A read-only gallery for browsing the backup and downloading files back to the phone lives in `web/`. GitHub Actions builds it into `ghcr.io/cmichalsen/iphone-photo-backup:latest` on every push to `main`. To run it, paste `web/compose.yaml` into a new Dockge stack and open `http://<nas>:8642`. It has no login, so keep it on the home network only.
+A read-only gallery for browsing the backup and downloading files back to the phone lives in `web/`. GitHub Actions builds it into `ghcr.io/cmichalsen/iphone-photo-backup:latest` on every push to `main`. To run it, paste `web/compose.yaml` into a new Dockge stack and open `https://<nas>:8643` on the iPhone (accept the one-time certificate warning; it enables Save to Photos and multi-select) or `http://<nas>:8642` elsewhere. It has no login, so keep it on the home network only.
 
