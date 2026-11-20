@@ -6,7 +6,10 @@ services:
     image: ghcr.io/cmichalsen/iphone-photo-backup:latest
     restart: unless-stopped
     volumes:
-      - /mnt/tank/media/iphone:/photos:ro                        # the backup, read-only
-      - /mnt/tank/media/iphone/.photobackup/thumbs:/thumbs       # thumbnail cache (safe to delete)
+      - /mnt/tank/media/iphone:/photos:ro   # the backup, read-only
+      - thumbs:/thumbs                      # thumbnail cache, kept in a Docker volume
     ports:
       - "8642:8080"
+
+volumes:
+  thumbs:
