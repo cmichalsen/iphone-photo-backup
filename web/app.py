@@ -1,6 +1,7 @@
 """Read-only photo gallery for the iPhone backup folder (YYYY/YYYY-MM/files)."""
 import hashlib
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -24,7 +25,8 @@ FFMPEG = shutil.which("ffmpeg")
 
 app = Flask(__name__, static_folder=None)
 _heavy = threading.Semaphore(3)  # limit concurrent thumbnail/preview generation
-_months_cache = (0.0, [])
+_index_cache = (0.0, [])
+_index_lock = threading.Lock()
 
 
 def kind_of(name: str):
@@ -43,43 +45,51 @@ def resolve(rel: str) -> Path:
     return path
 
 
-@app.get("/api/months")
-def months():
-    global _months_cache
-    stamp, data = _months_cache
-    if time.time() - stamp > 60 or request.args.get("refresh"):
-        data = []
-        # Newest year first; non-year folders such as "unknown-date" go last.
-        for top in sorted(os.scandir(ROOT), key=lambda e: (e.name.isdigit(), e.name), reverse=True):
-            if not top.is_dir() or top.name.startswith("."):
-                continue
-            subs = [e for e in os.scandir(top.path) if e.is_dir() and not e.name.startswith(".")]
-            folders = [(f"{top.name}/{s.name}", s.path) for s in sorted(subs, key=lambda e: e.name, reverse=True)]
-            folders.append((top.name, top.path))  # files directly in the top folder (e.g. unknown-date)
-            for key, path in folders:
-                count = sum(1 for e in os.scandir(path) if e.is_file() and kind_of(e.name))
-                if count:
-                    data.append({"key": key, "count": count})
-        _months_cache = (time.time(), data)
+@app.get("/api/all")
+def all_items():
+    """Every photo and video in the backup: p = path, k = i/v, s = bytes, t = capture time (unix seconds)."""
+    global _index_cache
+    with _index_lock:
+        stamp, data = _index_cache
+        if time.time() - stamp > 120 or request.args.get("refresh"):
+            data = build_index()
+            _index_cache = (time.time(), data)
     return jsonify(data)
 
 
-@app.get("/api/list")
-def list_month():
-    key = request.args.get("month", "")
-    parts = [p for p in key.split("/") if p]
-    if not parts or len(parts) > 2 or any(p.startswith(".") for p in parts):
-        abort(404)
-    folder = ROOT.joinpath(*parts).resolve()
-    if ROOT not in folder.parents or not folder.is_dir():
-        abort(404)
+def capture_dates() -> dict:
+    """Capture dates recorded by the backup app (the files' own timestamps are just the copy time)."""
+    dates = {}
+    try:
+        with open(ROOT / ".photobackup" / "state.jsonl", encoding="utf-8-sig") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if rec.get("N") and rec.get("M"):
+                    # M is .NET ticks (100 ns since year 0001) in the phone's local time.
+                    dates[rec["N"].replace("\\", "/")] = (rec["M"] - 621355968000000000) / 1e7
+    except OSError:
+        pass
+    return dates
+
+
+def build_index() -> list:
+    dates = capture_dates()
     items = []
-    for e in os.scandir(folder):
-        kind = kind_of(e.name) if e.is_file() else None
-        if kind:
-            items.append({"name": e.name, "kind": kind, "size": e.stat().st_size})
-    items.sort(key=lambda i: i["name"])
-    return jsonify(items)
+    for dirpath, dirnames, filenames in os.walk(ROOT):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        rel_dir = os.path.relpath(dirpath, ROOT).replace(os.sep, "/")
+        for name in filenames:
+            kind = kind_of(name)
+            if not kind:
+                continue
+            rel = name if rel_dir == "." else f"{rel_dir}/{name}"
+            st = os.stat(os.path.join(dirpath, name))
+            items.append({"p": rel, "k": kind[0], "s": st.st_size, "t": int(dates.get(rel, st.st_mtime))})
+    return items
+
 
 
 def cached(path: Path, variant: str, make):

@@ -12,10 +12,12 @@
   body { margin:0; background:var(--bg); color:var(--fg); font:16px -apple-system, system-ui, "Segoe UI", sans-serif; }
   header { position:sticky; top:0; z-index:2; background:var(--bar); border-bottom:1px solid var(--line);
            padding:10px 12px; padding-top:max(10px, env(safe-area-inset-top)); display:flex; gap:8px; align-items:center; }
-  header select { flex:1; min-width:0; font-size:16px; padding:8px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
-  header button { font-size:16px; padding:8px 12px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
+  header select { font-size:16px; padding:8px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--fg); min-width:0; }
+  #view { flex:1; }
   #info { padding:8px 12px; color:var(--muted); font-size:14px; }
-  #grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(104px, 1fr)); gap:2px; padding:0 2px 40px; }
+  #grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(104px, 1fr)); gap:2px; padding:0 2px; }
+  #grid h2 { grid-column:1 / -1; margin:0; padding:14px 10px 6px; font-size:16px; font-weight:600; }
+  #more { height:60px; }
   .tile { position:relative; aspect-ratio:1; background:var(--bar); overflow:hidden; border:0; padding:0; cursor:pointer; }
   .tile img { width:100%; height:100%; object-fit:cover; display:block; }
   .tile .badge { position:absolute; right:4px; bottom:4px; background:rgba(0,0,0,.6); color:#fff; font-size:11px; padding:1px 5px; border-radius:4px; }
@@ -35,12 +37,15 @@
 </head>
 <body>
 <header>
-  <select id="month" aria-label="Month"></select>
-  <button id="prevM" aria-label="Newer month">&#8249;</button>
-  <button id="nextM" aria-label="Older month">&#8250;</button>
+  <select id="view" aria-label="What to show"></select>
+  <select id="sort" aria-label="Sort order">
+    <option value="new">Newest first</option>
+    <option value="old">Oldest first</option>
+  </select>
 </header>
 <div id="info">Loading…</div>
 <div id="grid"></div>
+<div id="more"></div>
 
 <div id="viewer">
   <div id="stage"></div>
@@ -58,69 +63,112 @@
 const $ = id => document.getElementById(id);
 const enc = p => p.split('/').map(encodeURIComponent).join('/');
 const size = b => b >= 1<<30 ? (b/(1<<30)).toFixed(2)+' GB' : (b/(1<<20)).toFixed(1)+' MB';
+const nameOf = p => p.slice(p.lastIndexOf('/') + 1);
+const folderOf = p => p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '';
+// Capture times are the phone's local wall-clock time, so format them as UTC to avoid shifting them.
+const monthFmt = new Intl.DateTimeFormat(undefined, { month:'long', year:'numeric', timeZone:'UTC' });
+const dateFmt = new Intl.DateTimeFormat(undefined, { dateStyle:'medium', timeStyle:'short', timeZone:'UTC' });
 const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-let items = [], month = '', current = -1;
+const PAGE = 240;
 
-async function loadMonths() {
-  const months = await (await fetch('/api/months')).json();
-  if (!months.length) { $('info').textContent = 'No photos found in the backup folder.'; return; }
-  $('month').innerHTML = months.map(m => `<option value="${m.key}">${m.key.split('/').pop()} (${m.count})</option>`).join('');
-  const wanted = decodeURIComponent(location.hash.slice(1));
-  if (months.some(m => m.key === wanted)) $('month').value = wanted;
-  loadMonth();
+let all = [], list = [], shown = 0, lastHeading = '', current = -1;
+
+async function load() {
+  const res = await fetch('/api/all');
+  if (!res.ok) { $('info').textContent = 'Could not load the photo list.'; return; }
+  all = await res.json();
+  if (!all.length) { $('info').textContent = 'No photos found in the backup folder.'; return; }
+
+  const folders = new Map();
+  for (const it of all) { const f = folderOf(it.p); folders.set(f, (folders.get(f) || 0) + 1); }
+  const isYear = f => /^\d{4}/.test(f);
+  const keys = [...folders.keys()].sort((a, b) => (isYear(b) - isYear(a)) || b.localeCompare(a));
+  const photos = all.filter(i => i.k === 'i').length;
+  $('view').innerHTML =
+    `<option value="photos">All photos (${photos})</option>` +
+    `<option value="videos">All videos (${all.length - photos})</option>` +
+    `<option value="everything">Everything (${all.length})</option>` +
+    `<optgroup label="By folder">` +
+    keys.map(k => `<option value="f:${k}">${(k.split('/').pop() || 'top folder')} (${folders.get(k)})</option>`).join('') +
+    `</optgroup>`;
+
+  const [v, s] = decodeURIComponent(location.hash.slice(1)).split('|');
+  if ([...$('view').options].some(o => o.value === v)) $('view').value = v;
+  if (s === 'old' || s === 'new') $('sort').value = s;
+  show();
 }
 
-async function loadMonth() {
-  month = $('month').value;
-  history.replaceState(null, '', '#' + encodeURIComponent(month));
-  $('info').textContent = 'Loading…';
+function show() {
+  const view = $('view').value, dir = $('sort').value === 'old' ? 1 : -1;
+  history.replaceState(null, '', '#' + encodeURIComponent(view + '|' + $('sort').value));
+  list = all.filter(view === 'photos' ? i => i.k === 'i'
+                  : view === 'videos' ? i => i.k === 'v'
+                  : view === 'everything' ? () => true
+                  : i => folderOf(i.p) === view.slice(2));
+  list.sort((a, b) => dir * (a.t - b.t) || dir * a.p.localeCompare(b.p));
+  const vids = list.filter(i => i.k === 'v').length;
+  const total = list.reduce((s, i) => s + i.s, 0);
+  $('info').textContent = `${list.length - vids} photos, ${vids} videos, ${size(total)}`;
   $('grid').innerHTML = '';
-  const res = await fetch('/api/list?month=' + encodeURIComponent(month));
-  items = res.ok ? await res.json() : [];
-  const total = items.reduce((s, i) => s + i.size, 0);
-  const vids = items.filter(i => i.kind === 'video').length;
-  $('info').textContent = `${items.length - vids} photos, ${vids} videos, ${size(total)}`;
+  shown = 0; lastHeading = '';
+  window.scrollTo(0, 0);
+  renderMore();
+}
+
+function renderMore() {
   const frag = document.createDocumentFragment();
-  items.forEach((it, i) => {
+  const end = Math.min(list.length, shown + PAGE);
+  for (let i = shown; i < end; i++) {
+    const it = list[i];
+    const heading = it.t < 631152000 ? 'Unknown date' : monthFmt.format(it.t * 1000); // before 1990 = no real date
+    if (heading !== lastHeading) {
+      const h = document.createElement('h2'); h.textContent = heading; frag.append(h);
+      lastHeading = heading;
+    }
     const b = document.createElement('button');
     b.className = 'tile';
     b.onclick = () => openViewer(i);
     const img = document.createElement('img');
-    img.loading = 'lazy'; img.decoding = 'async'; img.alt = it.name;
-    img.src = `/thumb/${enc(month)}/${encodeURIComponent(it.name)}`;
+    img.loading = 'lazy'; img.decoding = 'async'; img.alt = nameOf(it.p);
+    img.src = '/thumb/' + enc(it.p);
     img.onerror = () => b.classList.add('nothumb');
     b.append(img);
-    const n = document.createElement('span'); n.className = 'name'; n.textContent = it.name; b.append(n);
-    if (it.kind === 'video') { const v = document.createElement('span'); v.className = 'badge'; v.textContent = '▶ video'; b.append(v); }
+    const n = document.createElement('span'); n.className = 'name'; n.textContent = nameOf(it.p); b.append(n);
+    if (it.k === 'v') { const v = document.createElement('span'); v.className = 'badge'; v.textContent = '▶ video'; b.append(v); }
     frag.append(b);
-  });
+  }
+  shown = end;
   $('grid').append(frag);
-  window.scrollTo(0, 0);
 }
+
+new IntersectionObserver(entries => {
+  if (entries[0].isIntersecting && shown < list.length) renderMore();
+}, { rootMargin: '1200px' }).observe($('more'));
 
 function openViewer(i) {
   current = i;
-  const it = items[i], url = `/file/${enc(month)}/${encodeURIComponent(it.name)}`;
+  const it = list[i], url = '/file/' + enc(it.p);
   const stage = $('stage');
   stage.innerHTML = '';
-  if (it.kind === 'video') {
+  if (it.k === 'v') {
     const v = document.createElement('video');
     v.controls = true; v.playsInline = true; v.preload = 'metadata'; v.src = url;
     stage.append(v);
     $('hint').textContent = isIOS ? 'To save: Download, then open it from the downloads arrow, tap Share, Save Video.' : '';
   } else {
     const img = document.createElement('img');
-    img.alt = it.name;
+    img.alt = nameOf(it.p);
     // Show the original where the browser can (Safari shows HEIC); otherwise fall back to a converted JPEG.
-    img.onerror = () => { img.onerror = null; img.src = `/preview/${enc(month)}/${encodeURIComponent(it.name)}`; };
+    img.onerror = () => { img.onerror = null; img.src = '/preview/' + enc(it.p); };
     img.src = url;
     stage.append(img);
     $('hint').textContent = isIOS ? 'To save: touch and hold the photo, then Save to Photos.' : '';
   }
-  $('vTitle').textContent = `${it.name} · ${size(it.size)}`;
+  $('vTitle').textContent = `${it.t < 631152000 ? 'Unknown date' : dateFmt.format(it.t * 1000)} ·${nameOf(it.p)} · ${size(it.s)}`;
   $('vDownload').href = url + '?dl=1';
   $('viewer').classList.add('open');
   document.body.style.overflow = 'hidden';
+  if (i >= shown - 1 && shown < list.length) renderMore();
 }
 
 function closeViewer() {
@@ -129,15 +177,10 @@ function closeViewer() {
   document.body.style.overflow = '';
 }
 
-function step(d) { const n = current + d; if (n >= 0 && n < items.length) openViewer(n); }
-function stepMonth(d) {
-  const s = $('month'), n = s.selectedIndex + d;
-  if (n >= 0 && n < s.options.length) { s.selectedIndex = n; loadMonth(); }
-}
+function step(d) { const n = current + d; if (n >= 0 && n < list.length) openViewer(n); }
 
-$('month').onchange = loadMonth;
-$('prevM').onclick = () => stepMonth(-1);
-$('nextM').onclick = () => stepMonth(1);
+$('view').onchange = show;
+$('sort').onchange = show;
 $('vClose').onclick = closeViewer;
 $('vPrev').onclick = () => step(-1);
 $('vNext').onclick = () => step(1);
@@ -147,7 +190,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'ArrowLeft') step(-1);
   if (e.key === 'ArrowRight') step(1);
 });
-loadMonths();
+load();
 </script>
 </body>
 </html>
