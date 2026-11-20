@@ -1,0 +1,12 @@
+# Dockge stack: read-only photo gallery for the iPhone backup.
+# Paste this into a new Dockge stack and deploy, then open http://10.0.0.41:8642
+# To update later: press Update in Dockge (it pulls the newest image).
+services:
+  photo-gallery:
+    image: ghcr.io/cmichalsen/iphone-photo-backup:latest
+    restart: unless-stopped
+    volumes:
+      - /mnt/tank/media/iphone:/photos:ro                        # the backup, read-only
+      - /mnt/tank/media/iphone/.photobackup/thumbs:/thumbs       # thumbnail cache (safe to delete)
+    ports:
+      - "8642:8080"
